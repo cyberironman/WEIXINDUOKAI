@@ -1,0 +1,55 @@
+# ---- 构建产物 ----
+build/
+dist/
+*.spec
+!scripts/*.spec
+
+# ---- 打包中间物 ----
+pkg/
+*.zip
+*.7z
+*.sha256
+
+# ---- 本机运行数据（绝不进仓库）----
+# 实例清单里可能带本机绝对路径
+instances.json
+guide_state.json
+/Data/
+/data/
+/logs/
+/runtime/
+/test_root*/
+
+# ---- 临时脚本与实验产物（本机调试用，不属于项目）----
+# 注意：只挡「下划线开头的文件」，**不要**挡掉 __init__.py / __main__.py
+#（它们是 Python 包的标准入口，必须进仓库）
+_*.py
+_*.txt
+_*.png
+_*.log
+!wechatmulti/__init__.py
+!wechatmulti/__main__.py
+!scripts/_*.py
+
+# ---- 沙箱目录（实验产物，可能有 GB 级微信文件副本）----
+_sandbox_*/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.mypy_cache/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.lnk
+
+# ---- 截图 / 文档中间物 ----
+docs/_*.png
+docs/_*.jpg
