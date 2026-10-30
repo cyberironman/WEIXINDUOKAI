@@ -171,3 +171,53 @@ def test_finder_parses_version():
     import re
     assert re.match(r"^\d+\.\d+\.\d+", "4.1.15.56")
     assert not re.match(r"^\d+\.\d+\.\d+", "Profile")
+
+
+# ---------------------------------------------------------------- 窗口识别
+
+def test_settings_titles_are_not_main_windows():
+    """「设置」等标题必须被认定为非主窗口。
+
+    微信的「设置」窗口类名和主窗口完全一样（都是 Qt51514QWindowIcon），
+    只看类名会把设置页当主窗口 —— 箭头就会画到设置页上，
+    表现为「指引挡住别的微信窗口」。
+    """
+    for t in ("设置", "設定", "Settings", "关于微信", "迁移与备份",
+              "通用设置", "检查更新"):
+        assert t in core.NON_MAIN_TITLES, "%r 应该被列为非主窗口标题" % t
+
+
+def test_main_title_whitelist_does_not_swallow_wechat():
+    """微信真正的窗口标题（WeChat / 微信）不能被误判成对话框。"""
+    for t in ("WeChat", "微信", "微信A", "微信B"):
+        assert t not in core.NON_MAIN_TITLES
+
+
+def test_rects_overlap():
+    """浮层避让用的矩形相交判断。"""
+    from wechatmulti import gui
+    a = (0, 0, 100, 100)
+    assert gui._rects_overlap(a, (50, 50, 150, 150))
+    assert gui._rects_overlap(a, (100, 100, 200, 200))     # 贴边算交叠
+    assert not gui._rects_overlap(a, (500, 500, 600, 600), pad=0)
+
+
+def test_pick_overlay_pos_avoids_wechat_windows():
+    """浮层必须避开所有微信窗口 —— 用户抱怨过它挡住右边那排微信。"""
+    from wechatmulti import gui
+    # 微信窗口铺满屏幕中间大半区域
+    occupied = [(578, 130, 1603, 945)]
+    pos = gui.pick_overlay_pos(300, 92, (615, 904), occupied, 1920, 1080)
+    box = (pos[0], pos[1], pos[0] + 300, pos[1] + 92)
+    assert not gui._rects_overlap(box, occupied[0]), \
+        "浮层 %s 压住了微信窗口 %s" % (box, occupied[0])
+
+
+def test_pick_overlay_pos_stays_on_screen():
+    """无论锚点在哪，浮层都不能跑到屏幕外。"""
+    from wechatmulti import gui
+    sw, sh = 1920, 1080
+    for anchor in ((0, 0), (1919, 1079), (960, 540), (-32000, -32000)):
+        pos = gui.pick_overlay_pos(300, 92, anchor, [], sw, sh)
+        assert 0 <= pos[0] <= sw - 300
+        assert 0 <= pos[1] <= sh - 92

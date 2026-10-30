@@ -8,7 +8,7 @@
 无毒无害、合法合规、不上传任何数据。
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "cyberironman"
 __license__ = "MIT"
 

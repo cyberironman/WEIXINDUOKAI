@@ -387,6 +387,8 @@ user32.BringWindowToTop.argtypes = [wintypes.HWND]
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
 user32.GetForegroundWindow.restype = wintypes.HANDLE
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
 # 「≡」在客户区里的位置：左 29px、离底 33px（1355x874 客户区实测）。
@@ -409,8 +411,51 @@ def _title_of(hwnd) -> str:
     return buf.value
 
 
-def wechat_windows(letter: str = "") -> list:
-    """找出某个实例（不传则任意实例）的微信主窗口。判据是 PEB 的 USERPROFILE。"""
+# 微信里那些**不是主窗口**的 Qt 窗口标题。
+# 它们的类名同样是 Qt51514QWindowIcon，光看类名分不出来 —— 必须按标题排除，
+# 否则「设置」窗口会被当成主窗口：箭头画到设置窗口上、切窗口切到设置页上，
+# 用户看到的就是「指引挡住了别的微信窗口」。
+NON_MAIN_TITLES = (
+    "设置", "設定", "Settings",
+    "关于微信", "關於微信", "About",
+    "迁移与备份", "遷移與備份",
+    "聊天记录迁移", "聊天記錄遷移",
+    "通用设置", "通用設定",
+    "文件管理", "快捷按键", "消息通知", "隐私", "音视频通话",
+    "截图", "外观", "账号与安全",
+    "小程序", "公众号",
+    "日志", "崩溃报告",
+    "检查更新", "发现新版本", "版本更新",
+    "确认", "提示", "警告",
+)
+
+
+def is_main_window(hwnd) -> bool:
+    """这个 Qt 窗口是不是微信的**主**窗口（不是设置页、不是各种对话框）。"""
+    title = _title_of(hwnd).strip()
+    if title in NON_MAIN_TITLES:
+        return False
+    # 最小化 / 隐藏到托盘的窗口：矩形不可信（-32000 或 144x20），
+    # 不能拿尺寸判断，只能靠标题判定。
+    if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
+        return True
+    # 尺寸兜底：主窗口至少 400x400，对话框一般更小或更扁
+    cr = wintypes.RECT()
+    if user32.GetWindowRect(hwnd, ctypes.byref(cr)):
+        if (cr.right - cr.left) < 400 or (cr.bottom - cr.top) < 400:
+            return False
+    return True
+
+
+def _wechat_hwnds(letter: str = "", main_only: bool = True,
+                  include_hidden: bool = True) -> list:
+    """枚举属于某实例的微信顶层窗口。
+
+    ``include_hidden`` 必须为 True —— 微信关窗口时是「最小化到托盘」，
+    此时 ``IsWindowVisible`` 返回 False，但窗口对象还在。
+    只认可见窗口的话，「点蓝色字 → 切到设置」在托盘状态下会完全没反应。
+    排序：可见的排前面，隐藏的排后面。
+    """
     profs = {}
     for pid in weixin_pids():
         p = read_userprofile(pid)
@@ -422,13 +467,14 @@ def wechat_windows(letter: str = "") -> list:
         want = os.path.normcase(
             os.path.normpath(os.path.join(ROOT, letter.upper(), "Profile"))).rstrip("\\")
 
-    out = []
+    visible, hidden = [], []
 
     def cb(hwnd, _lp):
-        if not user32.IsWindowVisible(hwnd):
-            return True
-        # 只认主窗口（Qt51514QWindowIcon 之类），弹出菜单是 ToolSaveBits
+        # 只认 Qt 窗口（弹出菜单是 ToolSaveBits）
         if not _class_of(hwnd).endswith("QWindowIcon"):
+            return True
+        vis = bool(user32.IsWindowVisible(hwnd))
+        if not vis and not include_hidden:
             return True
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
@@ -437,11 +483,28 @@ def wechat_windows(letter: str = "") -> list:
             return True
         if want and prof != want:
             return True
-        out.append(hwnd)
+        if main_only and not is_main_window(hwnd):
+            return True
+        (visible if vis else hidden).append(hwnd)
         return True
 
     user32.EnumWindows(_WNDENUMPROC(cb), 0)
-    return out
+    return visible + hidden
+
+
+def wechat_windows(letter: str = "") -> list:
+    """找出某个实例（不传则任意实例）的微信**主**窗口。
+
+    判据：类名是 Qt 窗口 + PEB 的 USERPROFILE 匹配 + 不是设置/对话框窗口。
+    最后一条很关键 —— 「设置」窗口的类名和主窗口完全一样。
+    """
+    return _wechat_hwnds(letter, main_only=True)
+
+
+def wechat_settings_windows(letter: str = "") -> list:
+    """找出某实例的「设置」窗口。用来判断「是不是已经进到设置页了」。"""
+    return [h for h in _wechat_hwnds(letter, main_only=False)
+            if _title_of(h).strip() in ("设置", "設定", "Settings")]
 
 
 def activate_window(hwnd) -> bool:
@@ -470,19 +533,59 @@ def menu_button_point(hwnd) -> tuple:
 
 
 def jump_to_settings(letter: str = "") -> tuple:
-    """把微信窗口提到前台，并返回「≡」的屏幕坐标，供界面画箭头。
+    """把用户送到「设置」页。
 
-    不做盲点点击：微信设置项是 Qt 自绘，多级盲点一旦错位可能把开关点反，
-    风险不值得。
+    三级行为，按可靠性降级：
+
+    1. **设置窗口已经开着** → 直接把它提到前台。这是真正的「跳转进设置」，
+       零风险、零猜测。
+    2. **设置窗口没开** → 把微信主窗口提到前台，返回「≡」的屏幕坐标，
+       由界面画箭头指出来（用户点两下就到）。
+    3. 主窗口都没有 → 报错让用户先启动实例。
+
+    为什么不自己做「点 ≡ → 点设置」：
+    微信 4.x 是 Qt 自绘，菜单项没有可访问性树，程序只能按坐标盲点。
+    菜单顺序、DPI 缩放、字体任一变化都可能点到「退出登录」这种项上 ——
+    那比让用户自己点两下严重得多。所以只做「已经开着就切过去」，
+    没开就精确指路。
+
+    返回 (ok, 消息, 锚点坐标或 None, 是否已经进入设置)
     """
+    # 一级：设置页已经开着 → 直接切过去
+    setting_wins = wechat_settings_windows(letter)
+    if setting_wins:
+        activate_window(setting_wins[0])
+        return (True, "设置", None, True)
+
+    # 二级：把主窗口提到前台并指出「≡」
     wins = wechat_windows(letter)
     if not wins:
         if letter:
-            return False, "%s%s 现在没有打开的窗口，先点「启动」把它开起来。" % (APP_NAME, letter.upper()), None
-        return False, "现在没有打开的微信窗口，先启动一个实例。", None
+            return (False,
+                    "%s%s 现在没有打开的窗口，先点「启动」把它开起来。"
+                    % (APP_NAME, letter.upper()), None, False)
+        return (False, "现在没有打开的微信窗口，先启动一个实例。", None, False)
     hwnd = wins[0]
     activate_window(hwnd)
-    return True, _title_of(hwnd), menu_button_point(hwnd)
+    return (True, _title_of(hwnd), menu_button_point(hwnd), False)
+
+
+def all_wechat_rects() -> list:
+    """**所有**微信窗口（主窗口 + 设置页 + 各实例）的屏幕矩形。
+
+    给浮层避让用 —— 用户抱怨过「指引挡住了微信三的设置按钮」。
+    所以避让名单必须是全部微信窗口，而不是只排除目标实例：
+    目标实例自己的「≡」按钮同样不能被盖住。
+    """
+    rects = []
+    for hwnd in _wechat_hwnds("", main_only=False):
+        r = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            continue
+        if r.left <= -30000:            # 最小化，跳过
+            continue
+        rects.append((r.left, r.top, r.right, r.bottom))
+    return rects
 
 
 # ---------------------------------------------------------------- 校验 / 复制

@@ -57,38 +57,110 @@ class LinkLabel(tk.Label):
             pass
 
 
-class HintOverlay(tk.Toplevel):
-    """置顶箭头浮层，指向微信左下角的「≡」。6 秒后自动消失，点一下也关。"""
+def _rects_overlap(a, b, pad=6) -> bool:
+    """两个矩形（l,t,r,b）是否相交（含外扩 pad）。"""
+    return not (a[2] + pad < b[0] or b[2] + pad < a[0]
+                or a[3] + pad < b[1] or b[3] + pad < a[1])
 
-    def __init__(self, master, x, y, text="点这里 → 设置 → 通用设置"):
+
+def pick_overlay_pos(w, h, anchor_xy, avoid_rects, screen_w, screen_h):
+    """给浮层挑一个**不遮挡任何微信窗口**的位置。
+
+    用户抱怨过：指引浮层总是盖住右边那排微信窗口（微信三的设置按钮）。
+    所以这里不再是「从锚点往右摆」，而是把候选位置逐个试，
+    选第一个与所有微信窗口都不相交的。
+
+    候选顺序：锚点右侧 → 锚点左侧 → 锚点下方 → 锚点上方
+              → 屏幕右下 → 屏幕左下 → 屏幕右上 → 屏幕左上（兜底）
+    """
+    ax, ay = anchor_xy
+    cands = [
+        (ax + 26, ay - h // 2),                    # 右
+        (ax - 26 - w, ay - h // 2),                # 左
+        (ax - w // 2, ay + 30),                    # 下
+        (ax - w // 2, ay - 30 - h),                # 上
+        (screen_w - w - 16, screen_h - h - 60),    # 屏幕右下
+        (16, screen_h - h - 60),                   # 屏幕左下
+        (screen_w - w - 16, 60),                   # 屏幕右上
+        (16, 60),                                  # 屏幕左上
+    ]
+    for cx, cy in cands:
+        cx = max(0, min(cx, screen_w - w))
+        cy = max(0, min(cy, screen_h - h))
+        box = (cx, cy, cx + w, cy + h)
+        if not any(_rects_overlap(box, r) for r in avoid_rects):
+            return cx, cy
+    # 全都撞车：退到屏幕右下角，至少不压住正在操作的锚点
+    return max(0, screen_w - w - 16), max(0, screen_h - h - 60)
+
+
+class HintOverlay(tk.Toplevel):
+    """置顶箭头浮层，指向微信左下角的「≡」。
+
+    设计要点（都是用户实际反馈改出来的）：
+      * **不遮挡任何微信窗口** —— 位置由 pick_overlay_pos 挑，
+        不会像以前那样固定往右摆、盖住右边那排微信。
+      * 鼠标移上去就暂停倒计时，方便看清。
+      * 8 秒后自动消失；点一下也关。
+    """
+
+    def __init__(self, master, x, y, text="点这里 → 设置 → 通用设置",
+                 avoid_rects=None):
         super().__init__(master)
         self.overrideredirect(True)
         self.attributes("-topmost", True)
         try:
-            self.attributes("-alpha", 0.96)
+            self.attributes("-alpha", 0.97)
         except tk.TclError:
             pass
 
-        w, h = 310, 96
-        bx = max(0, min(x + 26, self.winfo_screenwidth() - w - 4))
-        by = max(0, min(y - h // 2, self.winfo_screenheight() - h - 4))
+        w, h = 300, 92
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        bx, by = pick_overlay_pos(w, h, (x, y), avoid_rects or [], sw, sh)
         self.geometry("%dx%d+%d+%d" % (w, h, bx, by))
+        self._arrow_left = x < bx + w // 2
 
         cv = tk.Canvas(self, width=w, height=h, bg="#f5f6f8",
                        highlightthickness=0)
         cv.pack()
         mid = h // 2
-        cv.create_polygon(0, mid, 22, mid - 16, 22, mid + 16,
-                          fill=WARN, outline=WARN)
-        cv.create_rectangle(22, 4, w - 4, h - 4, fill="#fff1f0",
+        if self._arrow_left:
+            # 箭头在左：三角朝左，框占右边
+            cv.create_polygon(0, mid, 20, mid - 15, 20, mid + 15,
+                              fill=WARN, outline=WARN)
+            box_l, box_r, tx = 22, w - 4, 34
+        else:
+            # 箭头在右：三角朝右，框占左边
+            cv.create_polygon(w, mid, w - 20, mid - 15, w - 20, mid + 15,
+                              fill=WARN, outline=WARN)
+            box_l, box_r, tx = 4, w - 22, 14
+        cv.create_rectangle(box_l, 4, box_r, h - 4, fill="#fff1f0",
                             outline=WARN, width=2)
-        cv.create_text(36, mid - 14, text=text, anchor="w",
+        cv.create_text(tx, mid - 13, text=text, anchor="w",
                        font=("Microsoft YaHei UI", 10, "bold"), fill="#a8071a")
-        cv.create_text(36, mid + 13, text="红框位置就是左下角的「≡」按钮",
+        cv.create_text(tx, mid + 13, text="红框位置就是左下角的「≡」",
                        anchor="w", font=("Microsoft YaHei UI", 9), fill="#a8071a")
 
         self.bind("<Button-1>", lambda e: self.destroy())
-        self.after(6000, self.destroy)
+        self.bind("<Enter>", self._hold)
+        self.bind("<Leave>", self._resume)
+        self._timer = None
+        self._resume()
+
+    def _resume(self, _e=None):
+        self._cancel()
+        self._timer = self.after(8000, self.destroy)
+
+    def _hold(self, _e=None):
+        self._cancel()
+
+    def _cancel(self):
+        if self._timer:
+            try:
+                self.after_cancel(self._timer)
+            except Exception:
+                pass
+            self._timer = None
 
 
 class App(tk.Tk):
@@ -572,12 +644,19 @@ class AddDialog(tk.Toplevel):
 class GuideDialog(tk.Toplevel):
     """三步设置引导。
 
-    文字是蓝色可点的：点了会把对应实例的微信窗口提到前台，并在左下角「≡」
-    位置画一个置顶红框箭头，告诉你该点哪。
+    蓝色文字可点，点了有两个结果：
+      * **「设置」页已经开着** → 直接把它切到最前面（真正的跳转，零风险）
+      * **还没开** → 把微信主窗口提到前台，在左下角「≡」旁画一个红框箭头，
+        并且**浮层会自动避开所有微信窗口**，不会盖住其它实例
 
-    为什么不直接替用户点进设置：微信 4.x 是 Qt 自绘，没有可访问性树，
-    程序只能按坐标盲点；多级盲点一旦错位（版本/缩放一变）可能把开关点反，
-    那比让用户自己点一次更糟。所以做成「把你带到位置 + 指出来」。
+    再加一层**自动侦测**：用户按提示点开设置页后，本面板会自己确认
+    「✓ 检测到设置已打开」并告诉你这一页该动哪两项。
+
+    为什么不替用户点菜单：微信 4.x 是 Qt 自绘，菜单项没有可访问性树，
+    程序只能按坐标盲点。菜单顺序、DPI 缩放、字体任一变化都可能点到
+    「退出登录」这种项上 —— 那比让用户自己点两下严重得多。
+    设置项本身存在微信的加密配置里（config/client_config 是高熵密文），
+    直接改文件同样不可靠。所以只做「已经开着就切过去 + 没开就精确指路」。
     """
 
     STEPS = [
@@ -617,7 +696,8 @@ class GuideDialog(tk.Toplevel):
                  bg=BG, fg=TEXT).pack(anchor="w", padx=24, pady=(20, 4))
         tk.Label(self,
                  text="每个微信号的设置是各存一份的，所以每加一个号都要再做一次。\n"
-                      "蓝色文字可以点 —— 点了会把你带到微信里该点的位置。",
+                      "蓝色文字可以点 —— 设置页已经开着就直接切过去；没开就指给你看，"
+                      "指引框会自动避开所有微信窗口。",
                  font=("Microsoft YaHei UI", 9), bg=BG, fg=SUB,
                  justify="left").pack(anchor="w", padx=24)
 
@@ -632,14 +712,22 @@ class GuideDialog(tk.Toplevel):
                       size=10, bold=True).pack(anchor="w")
             tk.Label(inner, text=body, font=("Microsoft YaHei UI", 9),
                      bg=CARD, fg="#555555", justify="left").pack(anchor="w", pady=(4, 0))
-            link = ("→ 点这里：把微信窗口切到前面，我指给你看" if mode == "settings"
-                    else "→ 点这里：把微信窗口切到前面")
+            link = ("→ 点这里：打开设置页（已开就直接切过去，没开就指给你看）"
+                    if mode == "settings" else "→ 点这里：把微信窗口切到前面")
             LinkLabel(inner, link, lambda m=mode: self.jump(m),
                       bg=CARD, size=9).pack(anchor="w", pady=(6, 0))
 
         self.status = tk.Label(self, text="", font=("Microsoft YaHei UI", 9),
                                bg=BG, fg=SUB, justify="left", anchor="w")
         self.status.pack(fill="x", padx=24, pady=(10, 0))
+
+        # 「自动侦测」提示条：用户自己把设置页点开之后，这里会自动变成 ✓
+        self.detect = tk.Label(self, text="", font=("Microsoft YaHei UI", 9),
+                               bg=BG, fg=SUB, justify="left", anchor="w")
+        self.detect.pack(fill="x", padx=24, pady=(2, 0))
+        self._settings_seen = False
+        self._last_step = ""
+        self.after(900, self._watch_settings)
 
         btns = tk.Frame(self, bg=BG)
         btns.pack(fill="x", padx=24, pady=(10, 18), side="bottom")
@@ -651,15 +739,55 @@ class GuideDialog(tk.Toplevel):
                   font=("Microsoft YaHei UI", 9), bg=CARD, relief="flat", bd=0,
                   pady=8, padx=16, cursor="hand2").pack(side="right", padx=8)
 
+    def _watch_settings(self):
+        """每秒看一眼：用户的「设置」窗口开出来了没。
+
+        这是「直接跳进设置」做不到时的替代方案 —— 用户按提示点开设置页，
+        本面板立刻自己确认「✓ 检测到了」，并给出这一页里该动哪两项。
+        比自己翻页找、比盲点菜单都安全。
+        """
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        try:
+            wins = core.wechat_settings_windows(self.letter)
+        except Exception:
+            wins = []
+        if wins and not self._settings_seen:
+            self._settings_seen = True
+            self.detect.config(
+                text="✓ 检测到「设置」已打开 —— 请点左侧「通用设置」，"
+                     "把「有更新时自动升级微信」关掉、"
+                     "「自动下载小于 20M 的文件」改成 0。",
+                fg=OK)
+        elif not wins and self._settings_seen:
+            self._settings_seen = False
+            self.detect.config(text="（设置页已关闭）", fg=SUB)
+        self.after(1200, self._watch_settings)
+
     def jump(self, mode="settings"):
-        ok, msg, pt = core.jump_to_settings(self.letter)
+        ok, msg, pt, already = core.jump_to_settings(self.letter)
         if not ok:
             self.status.config(text="✗ " + msg, fg=WARN)
             return
-        if mode == "settings" and pt:
-            HintOverlay(self, pt[0], pt[1])
+        if already:
             self.status.config(
-                text="✓ 已把「%s」切到前面，看左下角红框指的位置。" % msg, fg=OK)
+                text="✓ 「设置」已经开着，已直接切到前面。", fg=OK)
+            self.detect.config(
+                text="请点左侧「通用设置」，把「有更新时自动升级微信」关掉、"
+                     "「自动下载小于 20M 的文件」改成 0。", fg=OK)
+            self._settings_seen = True
+            return
+        if mode == "settings" and pt:
+            avoid = core.all_wechat_rects()
+            HintOverlay(self, pt[0], pt[1], avoid_rects=avoid)
+            self.status.config(
+                text="✓ 已把「%s」切到前面 → 点左下角「≡」→ 设置。" % msg,
+                fg=OK)
+            self.detect.config(
+                text="（点开设置页后，这里会自动确认）", fg=SUB)
         else:
             self.status.config(text="✓ 已把「%s」切到前面。" % msg, fg=OK)
 
