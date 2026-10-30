@@ -64,7 +64,7 @@ def call(method: str, path: str, tok: str, payload=None, retries=4):
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", "Bearer " + tok)
         req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("User-Agent", "WeChatMulti-uploader")
+        req.add_header("User-Agent", "WEIXINDUOKAI-uploader")
         if data:
             req.add_header("Content-Type", "application/json")
         try:
@@ -123,7 +123,7 @@ def list_files() -> list:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--remote", default="https://github.com/cyberironman/WeChatMulti.git")
+    ap.add_argument("--remote", default="https://github.com/cyberironman/WEIXINDUOKAI.git")
     ap.add_argument("--branch", default="main")
     args = ap.parse_args()
 

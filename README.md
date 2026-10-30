@@ -1,4 +1,4 @@
-# 微信多开 WeChatMulti
+# WEIXINDUOKAI · 微信多开
 
 Windows 上让多个微信号同时在线的小工具。
 

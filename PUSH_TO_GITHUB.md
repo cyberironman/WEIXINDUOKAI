@@ -4,10 +4,10 @@
 
 | | |
 |---|---|
-| 仓库 | https://github.com/cyberironman/WeChatMulti |
+| 仓库 | https://github.com/cyberironman/WEIXINDUOKAI |
 | 当前状态 | **公开（Public）** |
 | 默认分支 | `main` |
-| 下载页 | https://github.com/cyberironman/WeChatMulti/releases/latest |
+| 下载页 | https://github.com/cyberironman/WEIXINDUOKAI/releases/latest |
 | 认证方式 | Git Credential Manager（已登录 `cyberironman`，以后不用再输密码） |
 
 > **仓库里不含任何腾讯的文件。** 微信客户端由使用者自己从腾讯官方渠道下载，
